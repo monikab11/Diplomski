@@ -14,13 +14,6 @@ from torch_geometric.utils import to_undirected
 from torch_geometric.transforms import NormalizeFeatures
 import argparse
 import wandb
-from gnn_utils.utils import (
-    count_parameters,
-    create_combined_histogram,
-    create_graph_wandb,
-    extract_graphs_from_batch,
-    graphs_to_tuple,
-)
 
 # BEST_MODEL_PATH = pathlib.Path(__file__).parents[1] / "models"
 # BEST_MODEL_PATH.mkdir(exist_ok=True, parents=True)
@@ -56,40 +49,6 @@ class PureRankingLoss(torch.nn.Module):
 
         return self.margin_ranking_loss(outputs[idx_i][valid], outputs[idx_j][valid], target[valid])
 
-
-# class PureRankingLoss(torch.nn.Module):
-#     def __init__(self, margin=0.0):
-#         super().__init__()
-#         self.margin_ranking_loss = MarginRankingLoss(margin=margin)
-
-#     def forward(self, outputs, y):
-#         """
-#         outputs: Tensor oblika [num_edges, 1]
-#         y: Tensor oblika [num_edges, 1] (kontinuirane vrijednosti)
-#         """
-#         outputs = outputs.view(-1)
-#         y = y.view(-1)
-
-#         # Generiraj sve parove (i < j)
-#         idx_i, idx_j = torch.triu_indices(outputs.size(0), outputs.size(0), offset=1)
-
-#         # Razlika u ground truth vrijednostima
-#         y_diff = y[idx_i] - y[idx_j]
-#         target = torch.sign(y_diff)
-
-#         # Filtriraj parove gdje y_i == y_j
-#         valid = target != 0
-#         if valid.sum() == 0:
-#             return torch.tensor(0.0, device=outputs.device, requires_grad=True)
-
-#         target = target[valid]
-#         output_i = outputs[idx_i][valid]
-#         output_j = outputs[idx_j][valid]
-
-#         # Računaj margin ranking loss
-#         return self.margin_ranking_loss(output_i, output_j, target)
-
-
 class CombinedRankingLoss(torch.nn.Module):
     def __init__(self, margin=0.0, max_pairs=5000):
         super().__init__()
@@ -122,50 +81,6 @@ class CombinedRankingLoss(torch.nn.Module):
         mr_loss = self.margin_ranking_loss(outputs[idx_i][valid], outputs[idx_j][valid], target[valid])
         return bce + mr_loss
 
-
-# class CombinedRankingLoss(torch.nn.Module):
-#     def __init__(self, margin=0.0):
-#         super().__init__()
-#         self.bce_loss = BCEWithLogitsLoss()
-#         self.margin_ranking_loss = MarginRankingLoss(margin=margin)
-
-#     def forward(self, outputs, y, y_threshold):
-#         """
-#         outputs: Tensor of shape [num_edges, 1]
-#         y: Tensor of shape [num_edges, 1] (continuous target values)
-#         y_threshold: Tensor of shape [num_edges, 1] (binary thresholded labels)
-#         """
-
-#         # BCE loss on thresholded labels
-#         bce = self.bce_loss(outputs, y_threshold)
-
-#         # Prepare pairwise differences for margin ranking loss
-#         # Flatten tensors
-#         outputs = outputs.view(-1)
-#         y = y.view(-1)
-
-#         # Create all pairs (i, j) with i < j
-#         idx_i, idx_j = torch.triu_indices(outputs.size(0), outputs.size(0), offset=1)
-
-#         # Differences in true values
-#         y_diff = y[idx_i] - y[idx_j]
-#         # Sign of difference: +1 if y_i > y_j else -1 if y_i < y_j
-#         target = torch.sign(y_diff)
-#         # Filter out pairs where y_i == y_j (target == 0)
-#         valid = target != 0
-#         if valid.sum() == 0:
-#             # No valid pairs, just return BCE loss
-#             return bce
-
-#         target = target[valid]
-#         output_i = outputs[idx_i][valid]
-#         output_j = outputs[idx_j][valid]
-
-#         # Margin ranking loss expects target in {1, -1}
-#         mr_loss = self.margin_ranking_loss(output_i, output_j, target)
-
-#         return bce + mr_loss
-
 def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, config):
     encoder.train()
     scorer.train()
@@ -190,54 +105,6 @@ def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, con
         optimizer.step()
         total_loss += loss.item()
     
-    return total_loss / len(loader)
-
-
-def train_epoch(encoder, scorer, loader, optimizer, loss_fn, device, config):
-    # todo: model.train()
-    encoder.train()
-    scorer.train()
-    total_loss = 0
-
-    for batch in tqdm(loader, desc="Training"):
-        batch = batch.to(device)
-        optimizer.zero_grad()
-
-        node_emb = encoder(batch.x, batch.edge_index) # batch = encoder.batch
-        preds = scorer(node_emb, batch.edge_index).unsqueeze(-1)
-
-        edge_batch = batch.batch[batch.edge_index[0]]
-        loss = 0
-        graphs = batch.to_data_list()
-        for g in range(batch.num_graphs):
-            mask = (edge_batch == g)
-            if mask.sum() == 0:
-                continue
-            preds_g = preds[mask]
-            y_g = batch.y[mask].unsqueeze(-1)
-            # For threshold, use median per-graph
-            y_threshold_g = (y_g >= torch.median(y_g)).float() #.unsqueeze(-1)
-            # loss += loss_fn(preds_g, y_g, y_threshold_g)
-            if (config.loss_fn == 'mse' or config.loss_fn == 'ranking'):
-                loss += loss_fn(preds_g, y_g)
-            elif (config.loss_fn == 'combined'):
-                loss += loss_fn(preds_g, y_g, y_threshold_g)
-            
-            # loss_graph = loss_fn(preds_g, y_g)
-
-            graph_id = int(graphs[g].graph_id) if hasattr(graphs[g], "graph_id") else g
-            # if graph_id == 5 or graph_id == 10:
-            #     print(f"\n[Train Graph {graph_id}] preds_g shape: {preds_g.shape}, y_g shape: {y_g.shape}")
-            #     print(f"[Train Graph {graph_id}] preds_g sample: {preds_g[:5].squeeze().detach().cpu().numpy()}")
-            #     print(f"[Train Graph {graph_id}] y_g sample: {y_g[:5].squeeze().detach().cpu().numpy()}")
-            #     print(f"[Train Graph {graph_id}] y_threshold_g sample: {y_threshold_g[:5].squeeze().detach().cpu().numpy()}")
-            #     print(f"[Train Graph {graph_id}] Loss: {loss_graph.item():.4f}")
-            
-        loss = loss / batch.num_graphs  # average over graphs in batch
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-
     return total_loss / len(loader)
 
 def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_net_crit_init.jsonl"):
@@ -414,7 +281,7 @@ def main():
 
     # GNN model, optimizer
     encoder = GraphSAGEEncoder(in_channels=len(config.features), hidden_channels=config.hidden_channels, num_layers=config.gnn_layers).to(device)
-    scorer = EdgeScorer(node_dim=config.hidden_channels, hidden_dim=config.hidden_channels, edge_feat_mode='dot').to(device)
+    scorer = EdgeScorer(node_dim=config.hidden_channels, hidden_dim=config.hidden_channels, edge_feat_mode=config.edge_feature_mode).to(device)
 
     optimizer = torch.optim.Adam(
         list(encoder.parameters()) + list(scorer.parameters()), 
@@ -435,7 +302,7 @@ def main():
 
     # training...
     try:
-        for epoch in range(1, config.epochs):
+        for epoch in range(1, config.epochs+1):
             train_loss = train_epoch_fastest(encoder, scorer, train_loader, optimizer, loss_fn, device, config=config)
             print(f"Epoch {epoch}, Loss: {train_loss:.4f}")
             eval_metrics = validate_epoch(encoder, scorer, val_loader, loss_fn, device, config)
