@@ -94,8 +94,8 @@ selection = {
     5: -1, 
     6: -1,
     7: -1,
-    8: -1
-    # 9: -1
+    8: -1,
+    9: 11000,
     # 10: -1
 }
 dataset = GraphDataset(selection=selection)
@@ -126,6 +126,6 @@ with ProcessPoolExecutor() as executor:
     for future in as_completed(futures):
         output.append(future.result())
 
-path_name = "criticality_dataset_" + str(metric) + "_full.pt"
+path_name = "criticality_dataset_" + str(metric) + "_full_and_9.pt"
 torch.save(output, Path(path_name))
 print("[✓] Dataset spremljen kao " + path_name)

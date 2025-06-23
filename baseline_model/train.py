@@ -14,6 +14,7 @@ from torch_geometric.utils import to_undirected
 from torch_geometric.transforms import NormalizeFeatures
 import argparse
 import wandb
+import itertools
 
 # BEST_MODEL_PATH = pathlib.Path(__file__).parents[1] / "models"
 # BEST_MODEL_PATH.mkdir(exist_ok=True, parents=True)
@@ -30,12 +31,36 @@ class PureRankingLoss(torch.nn.Module):
         y = y.view(-1)
         n = outputs.size(0)
 
-        # Sample limited number of (i, j) pairs
-        idx_i, idx_j = torch.randint(0, n, (2, self.max_pairs), device=outputs.device)
+        if n < 2:
+            return torch.tensor(0.0, device=outputs.device, requires_grad=True)
 
-        # Keep only pairs where i != j
-        mask = idx_i != idx_j
-        idx_i, idx_j = idx_i[mask], idx_j[mask]
+        max_possible = n * (n - 1) // 2
+
+        if max_possible <= self.max_pairs:
+            # Generiraj sve moguće (i, j) gdje i < j
+            pairs = torch.tensor(list(itertools.combinations(range(n), 2)), device=outputs.device)
+        else:
+            # Generiraj nasumične kandidate
+            idx_i, idx_j = torch.randint(0, n, (2, self.max_pairs * 2), device=outputs.device)
+
+            # Filtriraj: i != j i i < j
+            mask = (idx_i != idx_j) & (idx_i < idx_j)
+            idx_i = idx_i[mask]
+            idx_j = idx_j[mask]
+
+            # Kombiniraj i ukloni duplikate
+            if idx_i.numel() == 0:
+                return torch.tensor(0.0, device=outputs.device, requires_grad=True)
+
+            pairs = torch.stack([idx_i, idx_j], dim=1)
+            pairs = torch.unique(pairs, dim=0)
+
+            # Uzmimo najviše max_pairs parova
+            if pairs.size(0) > self.max_pairs:
+                rand_idx = torch.randperm(pairs.size(0), device=outputs.device)[:self.max_pairs]
+                pairs = pairs[rand_idx]
+
+        idx_i, idx_j = pairs[:, 0], pairs[:, 1]
 
         if idx_i.numel() == 0:
             return torch.tensor(0.0, device=outputs.device, requires_grad=True)
@@ -47,7 +72,13 @@ class PureRankingLoss(torch.nn.Module):
         if valid.sum() == 0:
             return torch.tensor(0.0, device=outputs.device, requires_grad=True)
 
-        return self.margin_ranking_loss(outputs[idx_i][valid], outputs[idx_j][valid], target[valid])
+        return self.margin_ranking_loss(
+            outputs[idx_i][valid],
+            outputs[idx_j][valid],
+            target[valid]
+        )
+
+
 
 class CombinedRankingLoss(torch.nn.Module):
     def __init__(self, margin=0.0, max_pairs=5000):
@@ -107,11 +138,11 @@ def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, con
     
     return total_loss / len(loader)
 
-def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_net_crit_init.jsonl"):
+
+def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_net_crit_4096_4096_0001.jsonl"):
     encoder.eval()
     scorer.eval()
 
-    all_hausdorff = []
     all_rankings = []
 
     with torch.no_grad():
@@ -146,29 +177,17 @@ def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_
                     "true_ranks": true_ranks.tolist()
                 })
 
-                pred_coords = np.expand_dims(pred_ranks, axis=1)
-                true_coords = np.expand_dims(true_ranks, axis=1)
-                hausdorff_dist = max(
-                    directed_hausdorff(pred_coords, true_coords)[0],
-                    directed_hausdorff(true_coords, pred_coords)[0]
-                )
-                all_hausdorff.append(hausdorff_dist)
-
-    avg_hausdorff = np.mean(all_hausdorff)
-
     # OTKOMENTIRAJ ZA SPREMANJE!!!!!!!!!!!!!!!!!!!!!!!!!
-    with open(save_path, "w") as f:
-        for result, dist in zip(all_rankings, all_hausdorff):
-            compact_result = {
-                "graph_id": int(result["graph_id"]),
-                "pred_ranks": [int(x) for x in result["pred_ranks"]],
-                "true_ranks": [int(x) for x in result["true_ranks"]],
-                "hausdorff": float(dist)
-            }
-            f.write(json.dumps(compact_result) + "\n")
+    # with open(save_path, "w") as f:
+    #     for result in all_rankings:
+    #         compact_result = {
+    #             "graph_id": int(result["graph_id"]),
+    #             "pred_ranks": [int(x) for x in result["pred_ranks"]],
+    #             "true_ranks": [int(x) for x in result["true_ranks"]]
+    #         }
+    #         f.write(json.dumps(compact_result) + "\n")
 
-    # print(f"[Evaluation] Average Hausdorff distance: {avg_hausdorff:.4f}")
-    return all_rankings, avg_hausdorff
+    return all_rankings
 
 
 def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
@@ -177,7 +196,6 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
     total_loss = 0
 
     metrics = {
-        'hausdorff': [],
         'all_match': 0,
         'all_pred_in_true': 0,
         'all_true_in_pred': 0,
@@ -228,7 +246,6 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
             total_loss += loss / batch.num_graphs
 
     metrics = {
-        'avg_hausdorff': np.mean(metrics['hausdorff']),
         'match_pct': metrics['all_match'] / metrics['total_graphs'],
         'pred_in_true_pct': metrics['all_pred_in_true'] / metrics['total_graphs'],
         'true_in_pred_pct': metrics['all_true_in_pred'] / metrics['total_graphs'],
@@ -241,22 +258,29 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gnn_layers', type=int, default=4)
+    parser.add_argument('--gnn_layers', type=int, default=3)
     parser.add_argument('--hidden_channels', type=int, default=64)
     parser.add_argument('--activation', type=str, default='relu')
-    parser.add_argument('--learning_rate', type=float, default=0.001)
-    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--learning_rate', type=float, default=0.01)
+    parser.add_argument('--train_batch', type=int, default=2048)
+    parser.add_argument("--test_batch", type=int, default=8192)
+    parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--margin', type=float, default=0.1)  # used if loss is "ranking"
     parser.add_argument("--no-wandb", action="store_true", help="Do not use W&B for logging.")
-    parser.add_argument("--features", type=list, default=["degree"])
-    parser.add_argument("--edge_feature_mode", type=str, default='dot')
-    parser.add_argument("--loss_fn", type=str, default='mse')
+    parser.add_argument("--features", type=list, default=["degree","betweenness","eigenvector","closeness"])
+    parser.add_argument("--edge_feature_mode", type=str, default='concat')
+    parser.add_argument("--loss_fn", type=str, default='ranking')
     parser.add_argument("--feature_normalization", type=bool, default=False)
     return parser.parse_args()
 
 def main():
+    best_model_state = None
+    best_metrics = None
+    best_match_pct = -1
+    BEST_MODEL_PATH = "./best_models/best_model.pt"
+
     args = parse_args()
-    # config = args
+    config = args
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -266,9 +290,9 @@ def main():
     # Load the dataset and normalize features
     if (config.feature_normalization):
         transform = NormalizeFeatures()
-        dataset = EdgeCriticalityDataset(path="/home/jovyan/Diplomski/Diplomski/dataset_generator/precalculated_features_network_criticality.pt",  metric_name="network_criticality", transform=transform, features=config.features)
+        dataset = EdgeCriticalityDataset(path="/home/jovyan/Diplomski/Diplomski/dataset_generator/precalculated_features_network_criticality_and_9.pt",  metric_name="network_criticality", transform=transform, features=config.features)
     else:
-        dataset = EdgeCriticalityDataset(path="/home/jovyan/Diplomski/Diplomski/dataset_generator/precalculated_features_network_criticality.pt", metric_name="network_criticality", features=config.features)
+        dataset = EdgeCriticalityDataset(path="/home/jovyan/Diplomski/Diplomski/dataset_generator/precalculated_features_network_criticality_and_9.pt", metric_name="network_criticality", features=config.features)
         
     # Split ds for train and test
     total_len = len(dataset)
@@ -276,8 +300,8 @@ def main():
     val_len = total_len - train_len
     
     train_dataset, val_dataset = random_split(dataset, [train_len, val_len])
-    train_loader = DataLoader(train_dataset, batch_size=2048, shuffle=True, num_workers=8) # mozda ovdje ipak 1????
-    val_loader = DataLoader(val_dataset, batch_size=4096, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=config.train_batch, shuffle=True, num_workers=8) # mozda ovdje ipak 1????
+    val_loader = DataLoader(val_dataset, batch_size=config.test_batch, shuffle=False)
 
     # GNN model, optimizer
     encoder = GraphSAGEEncoder(in_channels=len(config.features), hidden_channels=config.hidden_channels, num_layers=config.gnn_layers).to(device)
@@ -296,7 +320,7 @@ def main():
     if (config.loss_fn == 'mse'):
         loss_fn = F.mse_loss
     elif (config.loss_fn == 'ranking'):
-        loss_fn = PureRankingLoss(margin=0.1)
+        loss_fn = PureRankingLoss(margin=config.margin)
     elif (config.loss_fn == 'combined'): 
         loss_fn = CombinedRankingLoss(margin=0.1)
 
@@ -306,12 +330,23 @@ def main():
             train_loss = train_epoch_fastest(encoder, scorer, train_loader, optimizer, loss_fn, device, config=config)
             print(f"Epoch {epoch}, Loss: {train_loss:.4f}")
             eval_metrics = validate_epoch(encoder, scorer, val_loader, loss_fn, device, config)
-            print(f"traintest_loss: {eval_metrics['test_loss']}, match_pct: {eval_metrics['match_pct']}")
+            print(f"train test_loss: {eval_metrics['test_loss']}, match_pct: {eval_metrics['match_pct']}")
+            if eval_metrics['match_pct'] > best_match_pct:
+                best_match_pct = eval_metrics['match_pct']
+                best_model_state = {
+                    "encoder": encoder.state_dict(),
+                    "scorer": scorer.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "epoch": epoch
+                }
+                best_metrics = eval_metrics.copy()
+                torch.save(best_model_state, BEST_MODEL_PATH)
+                print(f"Saving model (epoch {epoch}) u '{BEST_MODEL_PATH}'")
+    
             wandb.log({
                 "epoch": epoch,
                 "train_loss": train_loss,
-                "test_loss": eval_metrics['test_loss'],
-                "val_hausdorff": eval_metrics['avg_hausdorff'],
+                "test_loss": eval_metrics['test_loss'], 
                 "match_pct": eval_metrics['match_pct'],
                 "pred_in_true_pct": eval_metrics['pred_in_true_pct'],
                 "true_in_pred_pct": eval_metrics['true_in_pred_pct'],
@@ -322,8 +357,25 @@ def main():
         if "out of memory" in str(e):
             print("Batch size 128 is too large, try 64 or 32")
 
+    if best_model_state:
+        encoder.load_state_dict(best_model_state["encoder"])
+        scorer.load_state_dict(best_model_state["scorer"])
+    
+        wandb.log({
+            "best_epoch": best_model_state["epoch"],
+            "best_match_pct": best_metrics['match_pct'],
+            "best_test_loss": best_metrics['test_loss'],
+            "best_pred_in_true_pct": best_metrics['pred_in_true_pct'],
+            "best_true_in_pred_pct": best_metrics['true_in_pred_pct'],
+            "best_true_in_pred_1_2_pct": best_metrics['true_in_pred_1_2_pct']
+        })
+    
+        print(f"Best model (epoch {best_model_state['epoch']}):")
+        for k, v in best_metrics.items():
+            print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
+
     print("Evaluating model...")
-    all_rankings, avg_hausdorff = evaluate(encoder, scorer, val_loader, device)
+    all_rankings = evaluate(encoder, scorer, val_loader, device)
 
     # Primjer ispisa prvih 3 rezultata
     for i, result in enumerate(all_rankings[:3]):

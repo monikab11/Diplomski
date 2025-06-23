@@ -22,6 +22,7 @@ from gnn_utils.utils import (
     graphs_to_tuple,
 )
 import time
+import itertools
 
 def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, config):
     encoder.train()
@@ -387,7 +388,7 @@ def main():
     val_len = total_len - train_len
     
     train_dataset, val_dataset = random_split(dataset, [train_len, val_len])
-    train_loader = DataLoader(train_dataset, batch_size=2048, shuffle=True, num_workers=16) # mozda ovdje ipak 1????
+    train_loader = DataLoader(train_dataset, batch_size=2048, shuffle=True, num_workers=8) # mozda ovdje ipak 1????
     val_loader = DataLoader(val_dataset, batch_size=4096, shuffle=False)
 
     # GNN model, optimizer
@@ -396,7 +397,7 @@ def main():
 
     optimizer = torch.optim.Adam(
         list(encoder.parameters()) + list(scorer.parameters()), 
-        lr=config.learning_rate, 
+        lr=0.001, #config.learning_rate, 
         weight_decay=1e-4,
         betas=(0.9, 0.999)  # beta1 is momentum term here
     )

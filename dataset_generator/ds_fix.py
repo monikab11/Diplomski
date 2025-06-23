@@ -3,7 +3,7 @@ import networkx as nx # Potrebno za izračun značajki
 import numpy as np   # Potrebno za eventualne numpy operacije
 
 # Učitaj dataset
-model = torch.load("/home/jovyan/Diplomski/Diplomski/dataset_generator/criticality_dataset_network_criticality_full.pt", weights_only=False)
+model = torch.load("/home/jovyan/Diplomski/Diplomski/dataset_generator/criticality_dataset_network_criticality_full_and_9.pt", weights_only=False)
 
 # Provjeri da je lista i nije prazna
 if isinstance(model, list) and len(model) > 0:
@@ -52,8 +52,8 @@ if isinstance(model, list) and len(model) > 0:
             print(f"Upozorenje: Graf {i} ne sadrži 'graph6' podatak. Preskačem izračun značajki.")
 
     # Spremi modificirani dataset u novi .pt fajl
-    torch.save(model, "precalculated_features_network_criticality.pt")
-    print("Modificirani dataset je spremljen kao 'precalculated_features_network_criticality.pt'")
+    torch.save(model, "precalculated_features_network_criticality_and_9.pt")
+    print("Modificirani dataset je spremljen kao 'precalculated_features_network_criticality_and_9.pt'")
 else:
     print("Greška: Dataset nije lista ili je prazan.")
 
