@@ -1,20 +1,22 @@
 import torch
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
-from gnn_model import GraphSAGEEncoder, EdgeScorer
+from gnn_model import GraphSAGEEncoder, EdgeScorer, GCNEncoder
 from edge_criticality_dataset import EdgeCriticalityDataset
 from tqdm import tqdm
-from scipy.spatial.distance import directed_hausdorff
 import numpy as np
 import json
 from scipy.stats import rankdata
 from torch.utils.data import random_split
-from torch.nn import BCEWithLogitsLoss, MarginRankingLoss
-from torch_geometric.utils import to_undirected
+from torch.nn import BCEWithLogitsLoss, MarginRankingLoss, BCEWithLogitsLoss
+from torch_geometric.utils import to_undirected, to_dense_batch, scatter
 from torch_geometric.transforms import NormalizeFeatures
+import itertools
 import argparse
 import wandb
-import itertools
+import math
+import torch.nn as nn
+import os
 
 # BEST_MODEL_PATH = pathlib.Path(__file__).parents[1] / "models"
 # BEST_MODEL_PATH.mkdir(exist_ok=True, parents=True)
@@ -112,6 +114,145 @@ class CombinedRankingLoss(torch.nn.Module):
         mr_loss = self.margin_ranking_loss(outputs[idx_i][valid], outputs[idx_j][valid], target[valid])
         return bce + mr_loss
 
+
+class BatchMarginRankingLoss(torch.nn.Module):
+    def __init__(self, margin=0.0):
+        super().__init__()
+        self.loss_fn = MarginRankingLoss(margin=margin, reduction="none")
+
+    def forward(self, outputs, y, edges_batch):
+        """
+        Computes the Margin Ranking Loss for a batch of graphs.
+
+        This function adapts the standard MarginRankingLoss to work on batches of
+        graphs as handled by PyTorch Geometric. It compares all pairs of edges
+        within each graph in the batch.
+
+        Args:
+            outputs (torch.Tensor): A 1D tensor of model outputs for each edge.
+            y (torch.Tensor): A 1D tensor of ground truth labels for each edge.
+            edge_index (torch.Tensor): A [2, num_edges] tensor representing the
+                                    graph edges.
+            batch_nodes (torch.Tensor): A 1D tensor mapping each node to its
+                                        corresponding graph in the batch.
+
+        Returns:
+            torch.Tensor: The computed margin ranking loss as a single scalar tensor.
+        """
+        # 2. Generate edge combinations within each graph
+        # Get the global indices of edges
+        edge_indices_global = torch.arange(len(outputs), device=outputs.device)
+
+        # Use to_dense_batch to group edges by their graph index.
+        # It returns a dense tensor where rows are graphs and columns are edges,
+        # padded with -1. It also provides a mask.
+        dense_edge_indices, mask = to_dense_batch(edge_indices_global, edges_batch, fill_value=-1)
+
+        i, j = self.batched_combinations(dense_edge_indices, mask)
+
+        # 3. Create the target tensor
+        # Compare the ground truth labels for the paired edges.
+        # target = 1 if y[i] > y[j], else -1
+        target = torch.sign(y[i] - y[j])
+
+        # 4. Compute the loss
+        # Select the model outputs corresponding to the paired edges
+        outputs_i = outputs[i]
+        outputs_j = outputs[j]
+
+        # Compute and return the final loss
+        loss = self.loss_fn(outputs_i, outputs_j, target)
+        # Create a batch tensor indicating which graph each loss element belongs to
+        # For each pair (i, j), both i and j belong to the same graph, so we can use edges_batch[i]
+        loss_batch = edges_batch[i]
+
+        # Compute mean loss for each graph using scatter
+        mean_loss_per_graph = scatter(loss, loss_batch, reduce="mean")
+
+        # The final loss is the mean of the per-graph mean losses
+        final_loss = mean_loss_per_graph.mean()
+
+        return final_loss
+
+    @staticmethod
+    def batched_combinations(dense_global_indices, mask):
+        # Get the number of edges in each graph
+        num_edges_per_graph = mask.sum(dim=1)
+
+        # Find the maximum number of edges in any single graph
+        max_edges_in_graph = num_edges_per_graph.max().int()
+
+        if max_edges_in_graph < 2:
+            return torch.tensor(0.0, device=dense_global_indices.device, requires_grad=True)
+
+        # Create a template of combinations for a graph of size `max_edges_in_graph`
+        template_combos = torch.combinations(torch.arange(max_edges_in_graph, device=dense_global_indices.device))
+        i_local = template_combos[:, 0]
+        j_local = template_combos[:, 1]
+
+        # Use the template to gather the global indices for all possible pairs
+        # Shape: [num_graphs, num_combinations_in_template]
+        i_global_candidates = dense_global_indices[:, i_local]
+        j_global_candidates = dense_global_indices[:, j_local]
+
+        # Create a mask to filter out invalid combinations. A combination is valid
+        # only if both of its local indices are less than the number of edges in
+        # that specific graph. We only need to check the larger index, j_local.
+        combination_mask = j_local < num_edges_per_graph.unsqueeze(1)
+
+        # Apply the mask to get the final, valid pairs of global edge indices
+        i = i_global_candidates[combination_mask]
+        j = j_global_candidates[combination_mask]
+
+        return i, j
+
+def train_epoch(encoder, scorer, loader, optimizer, loss_fn, device, config):
+    encoder.train()
+    scorer.train()
+    total_loss = 0
+
+    for batch in tqdm(loader, desc="Training"):
+        batch = batch.to(device)
+        optimizer.zero_grad()
+
+        node_emb = encoder(batch.x, batch.edge_index)
+        preds = scorer(node_emb, batch.edge_index).unsqueeze(-1)
+
+        edge_batch = batch.batch[batch.edge_index[0]]
+        loss = 0
+        graphs = batch.to_data_list()
+        
+        # pred_ranks = rankdata(-preds_g.cpu().numpy(), method='dense')
+        # true_ranks = rankdata(-y_g.cpu().numpy(), method='dense')
+        if config.loss_fn == 'batch_ranking':
+            epoch_loss = loss_fn(preds.squeeze(-1), batch.y.squeeze(-1), edge_batch)
+            total_loss += epoch_loss
+            epoch_loss.backward()
+            optimizer.step()
+        else:
+            for g in range(batch.num_graphs):
+                mask = (edge_batch == g)
+                if mask.sum() == 0:
+                    continue
+    
+                preds_g = preds[mask]
+                y_g = batch.y[mask].unsqueeze(-1)
+    
+                if config.loss_fn == 'combined':
+                    y_threshold_g = (y_g >= torch.median(y_g)).float()
+                    loss += loss_fn(preds_g, y_g, y_threshold_g)
+                elif config.loss_fn == 'mse':
+                    loss += torch.nn.MSELoss()(preds_g, y_g)   
+                else:
+                    loss += loss_fn(preds_g, y_g) 
+                    
+            loss = loss / batch.num_graphs  # average over graphs in batch
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            
+    return total_loss / len(loader)
+    
 def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, config):
     encoder.train()
     scorer.train()
@@ -211,6 +352,8 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
             
             edge_batch = batch.batch[batch.edge_index[0]]
             loss = 0
+            if config.loss_fn == 'batch_ranking':
+                loss = loss_fn(preds.squeeze(-1), batch.y.squeeze(-1), edge_batch)
             for g in range(batch.num_graphs):
                 mask = (edge_batch == g)
                 if mask.sum() == 0:
@@ -242,8 +385,11 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
                 metrics['all_true_in_pred'] += int(all(elem in pred_top for elem in true_top))
                 metrics['all_true_in_pred_1_2'] += int(all(elem in pred_top_1_2 for elem in true_top))
                 metrics['total_graphs'] += 1
-                    
-            total_loss += loss / batch.num_graphs
+
+            if config.loss_fn == 'batch_ranking':
+                total_loss += loss / len(loader)
+            else:
+                total_loss += loss / batch.num_graphs
 
     metrics = {
         'match_pct': metrics['all_match'] / metrics['total_graphs'],
@@ -269,8 +415,9 @@ def parse_args():
     parser.add_argument("--no-wandb", action="store_true", help="Do not use W&B for logging.")
     parser.add_argument("--features", type=list, default=["degree","betweenness","eigenvector","closeness"])
     parser.add_argument("--edge_feature_mode", type=str, default='concat')
-    parser.add_argument("--loss_fn", type=str, default='ranking')
+    parser.add_argument("--loss_fn", type=str, default='batch_ranking')
     parser.add_argument("--feature_normalization", type=bool, default=False)
+    parser.add_argument("--architecture", type=str, default='GraphSAGE')    
     return parser.parse_args()
 
 def main():
@@ -284,7 +431,7 @@ def main():
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    wandb.init(project="GNN_diplomski_2", config=args)
+    wandb.init(project="GNN_diplomski_7_mj", config=args)
     config = wandb.config    
 
     # Load the dataset and normalize features
@@ -304,7 +451,12 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=config.test_batch, shuffle=False)
 
     # GNN model, optimizer
-    encoder = GraphSAGEEncoder(in_channels=len(config.features), hidden_channels=config.hidden_channels, num_layers=config.gnn_layers).to(device)
+    if config.architecture == 'GCN':
+        encoder = GCNEncoder(in_channels=len(config.features), hidden_channels=config.hidden_channels, num_layers=config.gnn_layers).to(device)
+    elif config.architecture == 'GraphSAGE':
+        encoder = GraphSAGEEncoder(in_channels=len(config.features), hidden_channels=config.hidden_channels, num_layers=config.gnn_layers).to(device)
+    else:
+        raise ValueError(f"Unknown architecture: {config.architecture}")
     scorer = EdgeScorer(node_dim=config.hidden_channels, hidden_dim=config.hidden_channels, edge_feat_mode=config.edge_feature_mode).to(device)
 
     optimizer = torch.optim.Adam(
@@ -323,11 +475,20 @@ def main():
         loss_fn = PureRankingLoss(margin=config.margin)
     elif (config.loss_fn == 'combined'): 
         loss_fn = CombinedRankingLoss(margin=0.1)
+    elif (config.loss_fn == 'batch_ranking'):
+        loss_fn = BatchMarginRankingLoss(margin=config.margin)
+    else:
+        raise ValueError(f"Unknown loss function: {config.loss_fn}")
 
     # training...
+    early_stopping_patience = 15
+    epochs_without_improvement = 0
     try:
         for epoch in range(1, config.epochs+1):
-            train_loss = train_epoch_fastest(encoder, scorer, train_loader, optimizer, loss_fn, device, config=config)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # train_loss = train_epoch_fastest(encoder, scorer, train_loader, optimizer, loss_fn, device, config=config)
+            train_loss = train_epoch(encoder, scorer, train_loader, optimizer, loss_fn, device, config=config)
             print(f"Epoch {epoch}, Loss: {train_loss:.4f}")
             eval_metrics = validate_epoch(encoder, scorer, val_loader, loss_fn, device, config)
             print(f"train test_loss: {eval_metrics['test_loss']}, match_pct: {eval_metrics['match_pct']}")
@@ -339,9 +500,16 @@ def main():
                     "optimizer": optimizer.state_dict(),
                     "epoch": epoch
                 }
+                os.makedirs(os.path.dirname(BEST_MODEL_PATH), exist_ok=True)
                 best_metrics = eval_metrics.copy()
                 torch.save(best_model_state, BEST_MODEL_PATH)
                 print(f"Saving model (epoch {epoch}) u '{BEST_MODEL_PATH}'")
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= early_stopping_patience:
+                    print(f"Early stopping after {epoch} epochs")
+                    break
     
             wandb.log({
                 "epoch": epoch,
@@ -355,7 +523,7 @@ def main():
             scheduler.step(train_loss)
     except RuntimeError as e:
         if "out of memory" in str(e):
-            print("Batch size 128 is too large, try 64 or 32")
+            print(f"Batch size {config.train_batch} is too large, try 64 or 32")
 
     if best_model_state:
         encoder.load_state_dict(best_model_state["encoder"])
