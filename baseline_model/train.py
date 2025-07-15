@@ -435,7 +435,9 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
                 # metrics['ndcg_list'].append(graph_metrics['ndcg'])
                 # metrics['topn_list'].append(graph_metrics['top_n_percent'])
 
-            if config.loss_fn != 'batch_ranking':
+            if config.loss_fn == 'batch_ranking':
+                total_loss += loss    
+            else:
                 total_loss += loss / batch.num_graphs
 
     # valid_spearman = [v for v in metrics['spearman_list'] if not np.isnan(v)]
