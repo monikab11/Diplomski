@@ -6,11 +6,12 @@ from edge_criticality_dataset import EdgeCriticalityDataset
 from tqdm import tqdm
 import numpy as np
 import json
-from scipy.stats import rankdata
+from scipy.stats import rankdata, spearmanr, kendalltau
 from torch.utils.data import random_split
 from torch.nn import BCEWithLogitsLoss, MarginRankingLoss, BCEWithLogitsLoss
 from torch_geometric.utils import to_undirected, to_dense_batch, scatter
 from torch_geometric.transforms import NormalizeFeatures
+from sklearn.metrics import ndcg_score
 import itertools
 import argparse
 import wandb
@@ -278,8 +279,45 @@ def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, con
         total_loss += loss.item()
     
     return total_loss / len(loader)
+    
+def top_n_percent_accuracy(true, pred, n_percent=0.1):
+    k = max(1, int(len(true) * n_percent))
+    top_true = set(np.argsort(-true)[:k])
+    top_pred = set(np.argsort(-pred)[:k])
+    intersection = top_true & top_pred
+    return len(intersection) / len(top_true)
+    
+def compute_graph_ranking_metrics(true, pred, top_k_ratio=0.1):
+    true = np.asarray(true)
+    pred = np.asarray(pred)
 
+    if len(true) < 2:
+        return None
 
+    true_ndcg = true.copy()
+    if true_ndcg.min() < 0:
+        true_ndcg = true_ndcg - true_ndcg.min()
+
+    if np.all(true == true[0]) or np.all(pred == pred[0]):
+        spearman_corr = np.nan
+        kendall_corr = np.nan
+    else:
+        spearman_corr, _ = spearmanr(true, pred)
+        kendall_corr, _ = kendalltau(true, pred)
+
+    true_2d = true_ndcg.reshape(1, -1)
+    pred_2d = pred.reshape(1, -1)
+    ndcg = ndcg_score(true_2d, pred_2d, k=min(len(true), 10))
+
+    top_n_acc = top_n_percent_accuracy(true, pred, n_percent=top_k_ratio)
+
+    return {
+        "spearman": spearman_corr,
+        "kendall": kendall_corr,
+        "ndcg": ndcg,
+        "top_n_percent": top_n_acc
+    }
+    
 def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_net_crit_4096_4096_0001.jsonl"):
     encoder.eval()
     scorer.eval()
@@ -341,7 +379,11 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
         'all_pred_in_true': 0,
         'all_true_in_pred': 0,
         'all_true_in_pred_1_2': 0,
-        'total_graphs': 0
+        'total_graphs': 0#,
+        # 'spearman_list': [],
+        # 'kendall_list': [],
+        # 'ndcg_list': [],
+        # 'topn_list': []
     }
     
     with torch.no_grad():
@@ -385,18 +427,30 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
                 metrics['all_true_in_pred'] += int(all(elem in pred_top for elem in true_top))
                 metrics['all_true_in_pred_1_2'] += int(all(elem in pred_top_1_2 for elem in true_top))
                 metrics['total_graphs'] += 1
+                # true_np = y_g.squeeze().cpu().numpy()
+                # pred_np = preds_g.squeeze().cpu().numpy()
+                # graph_metrics = compute_graph_ranking_metrics(true_np, pred_np, top_k_ratio=0.1)
+                # metrics['spearman_list'].append(graph_metrics['spearman'])
+                # metrics['kendall_list'].append(graph_metrics['kendall'])
+                # metrics['ndcg_list'].append(graph_metrics['ndcg'])
+                # metrics['topn_list'].append(graph_metrics['top_n_percent'])
 
-            if config.loss_fn == 'batch_ranking':
-                total_loss += loss / len(loader)
-            else:
+            if config.loss_fn != 'batch_ranking':
                 total_loss += loss / batch.num_graphs
+
+    # valid_spearman = [v for v in metrics['spearman_list'] if not np.isnan(v)]
+    # valid_kendall = [v for v in metrics['kendall_list'] if not np.isnan(v)]
 
     metrics = {
         'match_pct': metrics['all_match'] / metrics['total_graphs'],
         'pred_in_true_pct': metrics['all_pred_in_true'] / metrics['total_graphs'],
         'true_in_pred_pct': metrics['all_true_in_pred'] / metrics['total_graphs'],
         'true_in_pred_1_2_pct': metrics['all_true_in_pred_1_2'] / metrics['total_graphs'],
-        'test_loss': total_loss / len(loader)
+        'test_loss': total_loss / len(loader)#,
+        # 'spearman_avg': sum(valid_spearman) / len(valid_spearman) if valid_spearman else np.nan,
+        # 'kendall_avg': sum(valid_kendall) / len(valid_kendall) if valid_kendall else np.nan,
+        # 'ndcg_avg': sum(metrics['ndcg_list']) / metrics['total_graphs'],
+        # 'topn_avg': sum(metrics['topn_list']) / metrics['total_graphs']
     }
             
     return metrics
@@ -518,7 +572,11 @@ def main():
                 "match_pct": eval_metrics['match_pct'],
                 "pred_in_true_pct": eval_metrics['pred_in_true_pct'],
                 "true_in_pred_pct": eval_metrics['true_in_pred_pct'],
-                "true_in_pred_1_2_pct": eval_metrics['true_in_pred_1_2_pct']
+                "true_in_pred_1_2_pct": eval_metrics['true_in_pred_1_2_pct']#,
+                # "spearman": eval_metrics["spearman_avg"],
+                # "kendall": eval_metrics["kendall_avg"],
+                # "ndcg": eval_metrics["ndcg_avg"],
+                # "topn@10%": eval_metrics["topn_avg"]
             })
             scheduler.step(train_loss)
     except RuntimeError as e:
@@ -535,7 +593,11 @@ def main():
             "best_test_loss": best_metrics['test_loss'],
             "best_pred_in_true_pct": best_metrics['pred_in_true_pct'],
             "best_true_in_pred_pct": best_metrics['true_in_pred_pct'],
-            "best_true_in_pred_1_2_pct": best_metrics['true_in_pred_1_2_pct']
+            "best_true_in_pred_1_2_pct": best_metrics['true_in_pred_1_2_pct']#,
+            # "spearman": best_metrics["spearman_avg"],
+            # "kendall": best_metrics["kendall_avg"],
+            # "ndcg": best_metrics["ndcg_avg"],
+            # "topn@10%": best_metrics["topn_avg"]
         })
     
         print(f"Best model (epoch {best_model_state['epoch']}):")
