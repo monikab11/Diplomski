@@ -1,8 +1,8 @@
 import torch
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
-from gnn_model import GraphSAGEEncoder, EdgeScorer, GCNEncoder
-from edge_criticality_dataset import EdgeCriticalityDataset
+from gnn_model import GraphSAGEEncoder, GCNEncoder, EdgeScorer, NodeScorer
+from criticality_dataset import CriticalityDataset
 from tqdm import tqdm
 import numpy as np
 import json
@@ -217,22 +217,26 @@ def train_epoch(encoder, scorer, loader, optimizer, loss_fn, device, config):
         optimizer.zero_grad()
 
         node_emb = encoder(batch.x, batch.edge_index)
-        preds = scorer(node_emb, batch.edge_index).unsqueeze(-1)
+        if (config.prediction_target == "edge"):
+            preds = scorer(node_emb, batch.edge_index).unsqueeze(-1)
+            batch_index = batch.batch[batch.edge_index[0]]
+        else:
+            preds = scorer(node_emb).unsqueeze(-1)
+            batch_index = batch.batch
 
-        edge_batch = batch.batch[batch.edge_index[0]]
         loss = 0
         graphs = batch.to_data_list()
         
         # pred_ranks = rankdata(-preds_g.cpu().numpy(), method='dense')
         # true_ranks = rankdata(-y_g.cpu().numpy(), method='dense')
         if config.loss_fn == 'batch_ranking':
-            epoch_loss = loss_fn(preds.squeeze(-1), batch.y.squeeze(-1), edge_batch)
+            epoch_loss = loss_fn(preds.squeeze(-1), batch.y.squeeze(-1), batch_index)
             total_loss += epoch_loss
             epoch_loss.backward()
             optimizer.step()
         else:
             for g in range(batch.num_graphs):
-                mask = (edge_batch == g)
+                mask = (batch_index == g)
                 if mask.sum() == 0:
                     continue
     
@@ -265,7 +269,10 @@ def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, con
         
         # Forward pass
         node_emb = encoder(batch.x, batch.edge_index)
-        preds = scorer(node_emb, batch.edge_index)
+        if (config.prediction_target == "edge"):
+            preds = scorer(node_emb, batch.edge_index)
+        else:
+            preds = scorer(node_emb)
         
         # Simplified loss - just use global median instead of per-graph
         if config.loss_fn == 'combined':
@@ -318,7 +325,7 @@ def compute_graph_ranking_metrics(true, pred, top_k_ratio=0.1):
         "top_n_percent": top_n_acc
     }
     
-def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_net_crit_4096_4096_0001.jsonl"):
+def evaluate(encoder, scorer, loader, device, config, save_path="./all_rankings/ranking_net_crit_final.jsonl"):
     encoder.eval()
     scorer.eval()
 
@@ -328,7 +335,12 @@ def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_
         for batch in loader:
             batch = batch.to(device)
             node_emb = encoder(batch.x, batch.edge_index)
-            preds = scorer(node_emb, batch.edge_index)
+            if (config.prediction_target == "edge"):
+                preds = scorer(node_emb, batch.edge_index)
+                batch_index = batch.batch[batch.edge_index[0]]
+            else:
+                preds = scorer(node_emb)
+                batch_index = batch.batch
 
             # Split batch into individual graphs
             graphs = batch.to_data_list()
@@ -336,10 +348,10 @@ def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_
             edge_ptr = batch.ptr  # batch.ptr gives cumulative node counts for graphs
 
             # To split preds and true values per graph, use batch information:
-            edge_batch = batch.batch[batch.edge_index[0]]  # edge to graph mapping
+            # edge_batch = batch.batch[batch.edge_index[0]]  # edge to graph mapping
 
             for g, graph in enumerate(graphs):
-                mask = (edge_batch == g)
+                mask = (batch_index == g)
                 preds_g = preds[mask].cpu().numpy()
                 true_g = graph.y.cpu().numpy()
 
@@ -348,8 +360,9 @@ def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_
                 true_ranks = rankdata(-true_g, method='dense')
 
                 all_rankings.append({
+                    "is_edge": config.prediction_target == "edge",
                     "graph_id": int(graph.graph_id) if hasattr(graph, "graph_id") else g,
-                    "edge_index": graph.edge_index.cpu().t().tolist(),
+                    "edge_node_index": graph.edge_index.cpu().t().tolist() if config.prediction_target == "edge" else list(range(graph.x.size(0))),
                     "pred_values": preds_g.tolist(),
                     "true_values": true_g.tolist(),
                     "pred_ranks": pred_ranks.tolist(),
@@ -357,14 +370,14 @@ def evaluate(encoder, scorer, loader, device, save_path="./all_rankings/ranking_
                 })
 
     # OTKOMENTIRAJ ZA SPREMANJE!!!!!!!!!!!!!!!!!!!!!!!!!
-    # with open(save_path, "w") as f:
-    #     for result in all_rankings:
-    #         compact_result = {
-    #             "graph_id": int(result["graph_id"]),
-    #             "pred_ranks": [int(x) for x in result["pred_ranks"]],
-    #             "true_ranks": [int(x) for x in result["true_ranks"]]
-    #         }
-    #         f.write(json.dumps(compact_result) + "\n")
+    with open(save_path, "w") as f:
+        for result in all_rankings:
+            compact_result = {
+                "graph_id": int(result["graph_id"]),
+                "pred_ranks": [int(x) for x in result["pred_ranks"]],
+                "true_ranks": [int(x) for x in result["true_ranks"]]
+            }
+            f.write(json.dumps(compact_result) + "\n")
 
     return all_rankings
 
@@ -390,14 +403,18 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
         for batch in loader:
             batch = batch.to(device)
             node_emb = encoder(batch.x, batch.edge_index)
-            preds = scorer(node_emb, batch.edge_index).unsqueeze(-1)
+            if (config.prediction_target == "edge"):
+                preds = scorer(node_emb, batch.edge_index).unsqueeze(-1)
+                batch_index = batch.batch[batch.edge_index[0]]
+            else:
+                preds = scorer(node_emb).unsqueeze(-1)
+                batch_index = batch.batch
             
-            edge_batch = batch.batch[batch.edge_index[0]]
             loss = 0
             if config.loss_fn == 'batch_ranking':
-                loss = loss_fn(preds.squeeze(-1), batch.y.squeeze(-1), edge_batch)
+                loss = loss_fn(preds.squeeze(-1), batch.y.squeeze(-1), batch_index)
             for g in range(batch.num_graphs):
-                mask = (edge_batch == g)
+                mask = (batch_index == g)
                 if mask.sum() == 0:
                     continue
                 preds_g = preds[mask]
@@ -435,7 +452,9 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
                 # metrics['ndcg_list'].append(graph_metrics['ndcg'])
                 # metrics['topn_list'].append(graph_metrics['top_n_percent'])
 
-            if config.loss_fn != 'batch_ranking':
+            if config.loss_fn == 'batch_ranking':
+                total_loss += loss    
+            else:
                 total_loss += loss / batch.num_graphs
 
     # valid_spearman = [v for v in metrics['spearman_list'] if not np.isnan(v)]
@@ -464,14 +483,15 @@ def parse_args():
     parser.add_argument('--learning_rate', type=float, default=0.01)
     parser.add_argument('--train_batch', type=int, default=2048)
     parser.add_argument("--test_batch", type=int, default=8192)
-    parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--margin', type=float, default=0.1)  # used if loss is "ranking"
     parser.add_argument("--no-wandb", action="store_true", help="Do not use W&B for logging.")
     parser.add_argument("--features", type=list, default=["degree","betweenness","eigenvector","closeness"])
     parser.add_argument("--edge_feature_mode", type=str, default='concat')
     parser.add_argument("--loss_fn", type=str, default='batch_ranking')
     parser.add_argument("--feature_normalization", type=bool, default=False)
-    parser.add_argument("--architecture", type=str, default='GraphSAGE')    
+    parser.add_argument("--architecture", type=str, default='GraphSAGE')   
+    parser.add_argument("--prediction_target", type=str, default="edge", choices=["edge", "node"])
     return parser.parse_args()
 
 def main():
@@ -491,9 +511,9 @@ def main():
     # Load the dataset and normalize features
     if (config.feature_normalization):
         transform = NormalizeFeatures()
-        dataset = EdgeCriticalityDataset(path="/home/jovyan/Diplomski/Diplomski/dataset_generator/precalculated_features_network_criticality_and_9.pt",  metric_name="network_criticality", transform=transform, features=config.features)
+        dataset = CriticalityDataset(path="../dataset_generator/criticality_dataset_network_criticality.pt",  metric_name="network_criticality", transform=transform, features=config.features, is_edge=config.prediction_target=="edge")
     else:
-        dataset = EdgeCriticalityDataset(path="/home/jovyan/Diplomski/Diplomski/dataset_generator/precalculated_features_network_criticality_and_9.pt", metric_name="network_criticality", features=config.features)
+        dataset = CriticalityDataset(path="../dataset_generator/criticality_dataset_network_criticality.pt", metric_name="network_criticality", features=config.features, is_edge=config.prediction_target=="edge")
         
     # Split ds for train and test
     total_len = len(dataset)
@@ -511,7 +531,11 @@ def main():
         encoder = GraphSAGEEncoder(in_channels=len(config.features), hidden_channels=config.hidden_channels, num_layers=config.gnn_layers).to(device)
     else:
         raise ValueError(f"Unknown architecture: {config.architecture}")
-    scorer = EdgeScorer(node_dim=config.hidden_channels, hidden_dim=config.hidden_channels, edge_feat_mode=config.edge_feature_mode).to(device)
+        
+    if (config.prediction_target == "edge"):
+        scorer = EdgeScorer(node_dim=config.hidden_channels, hidden_dim=config.hidden_channels, edge_feat_mode=config.edge_feature_mode).to(device)
+    else:
+        scorer = NodeScorer(node_dim=config.hidden_channels, hidden_dim=config.hidden_channels).to(device)
 
     optimizer = torch.optim.Adam(
         list(encoder.parameters()) + list(scorer.parameters()), 
@@ -604,13 +628,13 @@ def main():
         for k, v in best_metrics.items():
             print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
 
-    print("Evaluating model...")
-    all_rankings = evaluate(encoder, scorer, val_loader, device)
+    print("Evaluating model...") #promijeni da bude best
+    all_rankings = evaluate(encoder, scorer, val_loader, device, config)
 
     # Primjer ispisa prvih 3 rezultata
     for i, result in enumerate(all_rankings[:3]):
         print(f"\nGraph ID: {result['graph_id']}")
-        print("Edge Index:", result["edge_index"])
+        print("Edge Index:", result["edge_node_index"])
         print("True Ranks:", result["true_ranks"])
         print("Predicted Ranks:", result["pred_ranks"])
 

@@ -82,3 +82,15 @@ class EdgeScorer(nn.Module):
         
         score = self.mlp(edge_feat).squeeze(-1)
         return score
+
+class NodeScorer(nn.Module):
+    def __init__(self, node_dim, hidden_dim):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(node_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, x):
+        return self.mlp(x).squeeze(-1)
