@@ -37,12 +37,12 @@ class CriticalityDataset(Dataset):
         
         x = torch.cat(selected_features, dim=1)
         if self.is_edge:
-            if (self.metric_name in ["algebraic_connectivity", "network_criticality", "node_connectivity", "edge_connectivity"]):
+            if (self.metric_name in ["algebraic_connectivity", "network_criticality", "node_connectivity", "edge_connectivity", "nc1", "nc2", "nc3"]):
                 y = -1.0 * torch.tensor(item["edge_"+self.metric_name], dtype=torch.float)
             else:
                 y = torch.tensor(item["edge_"+self.metric_name], dtype=torch.float)
         else:
-            if (self.metric_name in ["algebraic_connectivity", "network_criticality", "node_connectivity", "edge_connectivity"]):
+            if (self.metric_name in ["algebraic_connectivity", "network_criticality", "node_connectivity", "edge_connectivity", "nc1", "nc2", "nc3"]):
                 y = -1.0 * torch.tensor(item["node_"+self.metric_name], dtype=torch.float)
             else:
                 y = torch.tensor(item["node_"+self.metric_name], dtype=torch.float)
