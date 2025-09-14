@@ -39,6 +39,20 @@ def network_criticality(G):
     tau_hat = 2 * trace_L_plus / (N - 1)        
     return tau_hat
 
+def nc1(G):
+    L = nx.laplacian_matrix(G).toarray()
+    isolated_nodes = np.sum(np.all(L == 0, axis=1))
+    if isolated_nodes > 0:
+        print(f"isolated {isolated_nodes}")
+        return -isolated_nodes
+    if not nx.is_connected(G):
+        return -0.5
+    L_plus = pinv(L)
+    trace_L_plus = np.trace(L_plus)
+    N = L.shape[0]
+    tau_hat = 2 * trace_L_plus / (N - 1)        
+    return tau_hat
+
 def calculate_metric(metric, G):
     match metric:
         case "algebraic_connectivity":
@@ -51,12 +65,19 @@ def calculate_metric(metric, G):
             return edge_connectivity(G)
         case "network_criticality":
             return network_criticality(G)
+        case "egr":
+            return effective_graph_resistance(G)
+        case "nc1":
+            return nc1(G)
+        case "nc3":
+            return nc1(G)
         case default:
             return algebraic_connectivity(G)
 
 def process_graph(i, g6, metric):
     G = nx.from_graph6_bytes(g6.encode())
     G_orig = G.copy()
+    # print(g6)
     
     metric_orig = calculate_metric(metric, G_orig)
 
@@ -64,27 +85,111 @@ def process_graph(i, g6, metric):
     node_index = []
     edge_delta_metric = []
     node_delta_metric = []
+    edge_connected = []
+    node_connected = []
+
+    new_metrics_node = []
+    new_metrics_edge = []
 
     for edge in list(G.edges()):
         G.remove_edge(*edge)
-        # if nx.is_connected(G):
         metric_new = calculate_metric(metric, G)
-        if math.isinf(metric_new):
-            metric_new = INFINITY
-        delta = metric_new - metric_orig
+        # if math.isinf(metric_new):
+        #     metric_new = INFINITY
+        # delta = metric_new - metric_orig
         edge_index.append(edge)
-        edge_delta_metric.append(round(delta, 3))
+        new_metrics_edge.append(metric_new)
+        # edge_delta_metric.append(round(delta, 3))
         G.add_edge(*edge)
 
     for node in list(G.nodes()):
-        G.remove_node(node) #*???
+        G.remove_node(node) 
         metric_new = calculate_metric(metric, G)
-        if math.isinf(metric_new):
-            metric_new = INFINITY
-        delta = metric_new - metric_orig
+        # if math.isinf(metric_new):
+        #     metric_new = INFINITY
+        # delta = metric_new - metric_orig
         node_index.append(node)
-        node_delta_metric.append(round(delta, 3))
+        new_metrics_node.append(metric_new)
+        # node_delta_metric.append(round(delta, 3))
         G = G_orig.copy()
+    
+    possible_values = [-0.05, -0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9]
+    
+    if metric == "nc1":
+        print(f"before {new_metrics_edge}")
+        first_value = new_metrics_edge[0]
+        if all(x == first_value for x in new_metrics_edge):
+            if first_value in possible_values:
+                edge_delta_metric = [0 for _ in edge_delta_metric]
+        else:
+            positive_finite_values = [x for x in new_metrics_edge if x > 0]
+            if positive_finite_values:
+                finite_min_positive = min(positive_finite_values)
+            else:
+                finite_min_positive = 0
+    
+            new_metrics_edge = [round(finite_min_positive + x, 3) if x in possible_values else x for x in new_metrics_edge]
+        print(f"after {new_metrics_edge}")
+        edge_delta_metric = [round(metric_orig + x, 3) for x in new_metrics_edge]
+        print(f"edge_delta_metric {edge_delta_metric}")
+
+        print(f"before {new_metrics_node}")
+        first_value = new_metrics_node[0]
+        if all(x == first_value for x in new_metrics_node):
+            if first_value in possible_values:
+                node_delta_metric = [0 for _ in edge_delta_metric]
+        else:
+            positive_finite_values = [x for x in new_metrics_node if x > 0]
+            if positive_finite_values:
+                finite_min_positive = min(positive_finite_values)
+            else:
+                finite_min_positive = 0
+    
+            new_metrics_node = [round(finite_min_positive + x, 3) if x in possible_values else x for x in new_metrics_node]
+        print(f"after {new_metrics_node}")
+        node_delta_metric = [round(metric_orig + x, 3) for x in new_metrics_node]
+        print(f"node_delta_metric {node_delta_metric}")
+
+    possible_values = [-0.5, -1, -2, -3, -4, -5, -6, -7, -8, -9]
+    if metric == "nc3":
+        print(f"before {new_metrics_edge}")
+        first_value = new_metrics_edge[0]
+        if all(x == first_value for x in new_metrics_edge):
+            # print("POSSIBLE -------------------------------------------------------------------------------")
+            if first_value in possible_values:
+                # print("POSSIBLE")
+                new_metrics_edge = [0 for _ in new_metrics_edge]
+        else:
+            positive_finite_values = [x for x in new_metrics_edge if x > 0]
+            if positive_finite_values:
+                finite_min_positive = min(positive_finite_values)
+            else:
+                finite_min_positive = 0
+    
+            new_metrics_edge = [round(finite_min_positive + x, 3) if x in possible_values else x for x in new_metrics_edge]
+        print(f"after {new_metrics_edge}")
+        edge_delta_metric = [round(-metric_orig + x, 3) for x in new_metrics_edge]
+        print(f"edge_delta_metric {edge_delta_metric}")
+
+        print(f"before {new_metrics_node}")
+        first_value = new_metrics_node[0]
+        if all(x == first_value for x in new_metrics_node):
+            # print("POSSIBLE ------------------------------------------------------------------------------- 2")
+            if first_value in possible_values:
+                # print("POSSIBLE 2")
+                new_metrics_node = [0 for _ in new_metrics_node]
+        else:
+            positive_finite_values = [x for x in new_metrics_node if x > 0]
+            if positive_finite_values:
+                finite_min_positive = min(positive_finite_values)
+            else:
+                finite_min_positive = 0
+    
+            new_metrics_node = [round(finite_min_positive + x, 3) if x in possible_values else x for x in new_metrics_node]
+        print(f"after {new_metrics_node}")
+        node_delta_metric = [round(-metric_orig + x, 3) for x in new_metrics_node]
+        print(f"node_delta_metric {node_delta_metric}")
+        
         
     return {
         "graph_id": i,
@@ -119,7 +224,6 @@ dataset = GraphDataset(selection=selection)
 output = []
 
 # for i, g6 in enumerate(tqdm(dataset.graphs(batch_size=1))):
-#         counter_started += 1
 #         res = process_graph(i, g6, metric)
 #         output.append(res)
 with ProcessPoolExecutor() as executor:
