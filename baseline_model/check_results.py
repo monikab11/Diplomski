@@ -20,7 +20,6 @@ with open(path, 'r') as file:
             print("Greška u dekodiranju JSON-a:", line)
 
 # print(graph_id)
-# Filtrirajte elemente s graph_id = 1
 if (graph_id == -1):
     for i in range(30):
         result = next((item for item in data if item["graph_id"] == int(i)), None)
