@@ -375,7 +375,6 @@ def evaluate(encoder, scorer, loader, device, config, save_path="./all_rankings/
                     "true_ranks": true_ranks.tolist()
                 })
 
-    # OTKOMENTIRAJ ZA SPREMANJE!!!!!!!!!!!!!!!!!!!!!!!!!
     with open(save_path, "w") as f:
         for result in all_rankings:
             compact_result = {
@@ -508,13 +507,16 @@ def main():
     global min_scorer_value
     global max_scorer_value
 
+    WANDB_ENABLED = False
+
     args = parse_args()
     config = args
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    wandb.init(project="GNN_diplomski_7_mj", config=args)
-    config = wandb.config    
+    if WANDB_ENABLED:
+        wandb.init(project="GNN_diplomski_7_mj", config=args)
+        config = wandb.config    
 
     # Load the dataset and normalize features
     if (config.feature_normalization):
@@ -609,20 +611,21 @@ def main():
                 if epochs_without_improvement >= early_stopping_patience:
                     print(f"Early stopping after {epoch} epochs")
                     break
-    
-            wandb.log({
-                "epoch": epoch,
-                "train_loss": train_loss,
-                "test_loss": eval_metrics['test_loss'], 
-                "match_pct": eval_metrics['match_pct'],
-                "pred_in_true_pct": eval_metrics['pred_in_true_pct'],
-                "true_in_pred_pct": eval_metrics['true_in_pred_pct']
-                "true_in_pred_1_2_pct": eval_metrics['true_in_pred_1_2_pct'],
-                "spearman": eval_metrics["spearman_avg"],
-                "kendall": eval_metrics["kendall_avg"],
-                "ndcg": eval_metrics["ndcg_avg"],
-                "topn@10%": eval_metrics["topn_avg"]
-            })
+
+            if WANDB_ENABLED:
+                wandb.log({
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "test_loss": eval_metrics['test_loss'], 
+                    "match_pct": eval_metrics['match_pct'],
+                    "pred_in_true_pct": eval_metrics['pred_in_true_pct'],
+                    "true_in_pred_pct": eval_metrics['true_in_pred_pct'],
+                    "true_in_pred_1_2_pct": eval_metrics['true_in_pred_1_2_pct'],
+                    "spearman": eval_metrics["spearman_avg"],
+                    "kendall": eval_metrics["kendall_avg"],
+                    "ndcg": eval_metrics["ndcg_avg"],
+                    "topn@10%": eval_metrics["topn_avg"]
+                })
             scheduler.step(train_loss)
     except RuntimeError as e:
         if "out of memory" in str(e):
@@ -631,19 +634,20 @@ def main():
     if best_model_state:
         encoder.load_state_dict(best_model_state["encoder"])
         scorer.load_state_dict(best_model_state["scorer"])
-    
-        wandb.log({
-            "best_epoch": best_model_state["epoch"],
-            "best_match_pct": best_metrics['match_pct'],
-            "best_test_loss": best_metrics['test_loss'],
-            "best_pred_in_true_pct": best_metrics['pred_in_true_pct'],
-            "best_true_in_pred_pct": best_metrics['true_in_pred_pct'],
-            "best_true_in_pred_1_2_pct": best_metrics['true_in_pred_1_2_pct'],
-            "spearman": best_metrics["spearman_avg"],
-            "kendall": best_metrics["kendall_avg"],
-            "ndcg": best_metrics["ndcg_avg"],
-            "topn@10%": best_metrics["topn_avg"]
-        })
+
+        if WANDB_ENABLED:
+            wandb.log({
+                "best_epoch": best_model_state["epoch"],
+                "best_match_pct": best_metrics['match_pct'],
+                "best_test_loss": best_metrics['test_loss'],
+                "best_pred_in_true_pct": best_metrics['pred_in_true_pct'],
+                "best_true_in_pred_pct": best_metrics['true_in_pred_pct'],
+                "best_true_in_pred_1_2_pct": best_metrics['true_in_pred_1_2_pct'],
+                "spearman": best_metrics["spearman_avg"],
+                "kendall": best_metrics["kendall_avg"],
+                "ndcg": best_metrics["ndcg_avg"],
+                "topn@10%": best_metrics["topn_avg"]
+            })
     
         print(f"Best model (epoch {best_model_state['epoch']}):")
         for k, v in best_metrics.items():
