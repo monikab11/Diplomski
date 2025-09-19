@@ -11,22 +11,10 @@ parameters:
     values: [64, 16, 32]
   gnn_layers:
     values: [4, 3, 5]
-  mlp_layers:
-    value: 2
-  dropout:
-    value: 0.0
-  activation:
-    value: relu
-  pool:
-    value: multi
-  optimizer:
-    value: adam
   learning_rate:
     values: [0.001, 0.01]
   epochs:
     values: [20, 100]
-  jk:
-    values: ["none"] # ["none"] # "cat"
   features:
     values: [["degree"], ["degree", "clustering"], ["degree", "clustering", "pagerank", "betweenness", "eigenvector"]]
   edge_feature_mode:

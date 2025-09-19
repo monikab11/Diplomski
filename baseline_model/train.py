@@ -471,7 +471,6 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gnn_layers', type=int, default=3)
     parser.add_argument('--hidden_channels', type=int, default=64)
-    parser.add_argument('--activation', type=str, default='relu')
     parser.add_argument('--learning_rate', type=float, default=0.01)
     parser.add_argument('--train_batch', type=int, default=2048)
     parser.add_argument("--test_batch", type=int, default=8192)
@@ -494,7 +493,7 @@ def main():
     global min_scorer_value
     global max_scorer_value
 
-    WANDB_ENABLED = False
+    WANDB_ENABLED = False # Set to True if running train with ./run_sweep.sh
 
     args = parse_args()
     config = args
