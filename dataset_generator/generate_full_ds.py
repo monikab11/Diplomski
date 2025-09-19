@@ -1,17 +1,17 @@
-import torch
-import networkx as nx
-import numpy as np
-from pathlib import Path
-from scipy.linalg import pinv
-from tqdm import tqdm
-import sys
-import argparse
-import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from my_graphs_dataset import GraphDataset
+from scipy.linalg import pinv
+from pathlib import Path
+import networkx as nx
+from tqdm import tqdm
+import numpy as np
+import argparse
+import torch
+import sys
+
 INFINITY = sys.maxsize
 
 sys.path.append("/home/jovyan/Diplomski/my_graphs_dataset")
-from my_graphs_dataset import GraphDataset
 
 # -------------------------------
 # METRICS
@@ -85,8 +85,6 @@ def process_graph(i, g6, metric):
     node_index = []
     edge_delta_metric = []
     node_delta_metric = []
-    edge_connected = []
-    node_connected = []
 
     new_metrics_node = []
     new_metrics_edge = []
@@ -94,23 +92,15 @@ def process_graph(i, g6, metric):
     for edge in list(G.edges()):
         G.remove_edge(*edge)
         metric_new = calculate_metric(metric, G)
-        # if math.isinf(metric_new):
-        #     metric_new = INFINITY
-        # delta = metric_new - metric_orig
         edge_index.append(edge)
         new_metrics_edge.append(metric_new)
-        # edge_delta_metric.append(round(delta, 3))
         G.add_edge(*edge)
 
     for node in list(G.nodes()):
         G.remove_node(node) 
         metric_new = calculate_metric(metric, G)
-        # if math.isinf(metric_new):
-        #     metric_new = INFINITY
-        # delta = metric_new - metric_orig
         node_index.append(node)
         new_metrics_node.append(metric_new)
-        # node_delta_metric.append(round(delta, 3))
         G = G_orig.copy()
     
     possible_values = [-0.05, -0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9]
@@ -155,9 +145,7 @@ def process_graph(i, g6, metric):
         print(f"before {new_metrics_edge}")
         first_value = new_metrics_edge[0]
         if all(x == first_value for x in new_metrics_edge):
-            # print("POSSIBLE -------------------------------------------------------------------------------")
             if first_value in possible_values:
-                # print("POSSIBLE")
                 new_metrics_edge = [0 for _ in new_metrics_edge]
         else:
             positive_finite_values = [x for x in new_metrics_edge if x > 0]
@@ -174,9 +162,7 @@ def process_graph(i, g6, metric):
         print(f"before {new_metrics_node}")
         first_value = new_metrics_node[0]
         if all(x == first_value for x in new_metrics_node):
-            # print("POSSIBLE ------------------------------------------------------------------------------- 2")
             if first_value in possible_values:
-                # print("POSSIBLE 2")
                 new_metrics_node = [0 for _ in new_metrics_node]
         else:
             positive_finite_values = [x for x in new_metrics_node if x > 0]
@@ -223,17 +209,14 @@ selection = {
 dataset = GraphDataset(selection=selection)
 output = []
 
-# for i, g6 in enumerate(tqdm(dataset.graphs(batch_size=1))):
-#         res = process_graph(i, g6, metric)
-#         output.append(res)
 with ProcessPoolExecutor() as executor:
     futures = []
     for i, g6 in enumerate(tqdm(dataset.graphs(batch_size=1))):
         futures.append(executor.submit(process_graph, i, g6, metric))
     for future in as_completed(futures):
         output.append(future.result())
-        
-print("HERE")
+
+
 path_name = "criticality_dataset_" + str(metric) + ".pt"
 torch.save(output, Path(path_name))
 print("Dataset saved as " + path_name)
