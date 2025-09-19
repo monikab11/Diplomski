@@ -1,26 +1,25 @@
-import torch
-from torch_geometric.loader import DataLoader
-import torch.nn.functional as F
 from gnn_model import GraphSAGEEncoder, GCNEncoder, EdgeScorer, NodeScorer
-from criticality_dataset import CriticalityDataset
-from tqdm import tqdm
-import numpy as np
-import json
-from scipy.stats import rankdata, spearmanr, kendalltau
-from torch.utils.data import random_split
 from torch.nn import BCEWithLogitsLoss, MarginRankingLoss, BCEWithLogitsLoss
 from torch_geometric.utils import to_undirected, to_dense_batch, scatter
 from torch_geometric.transforms import NormalizeFeatures
+from scipy.stats import rankdata, spearmanr, kendalltau
+from criticality_dataset import CriticalityDataset
+from torch_geometric.loader import DataLoader
+from torch.utils.data import random_split
 from sklearn.metrics import ndcg_score
+import torch.nn.functional as F
+from tqdm import tqdm
+import numpy as np
 import itertools
 import argparse
+import torch
 import wandb
-import math
-import torch.nn as nn
+import json
 import os
 
 min_scorer_value = 100
 max_scorer_value = -100
+
 
 class PureRankingLoss(torch.nn.Module):
     def __init__(self, margin=0.0, max_pairs=5000):
@@ -39,25 +38,22 @@ class PureRankingLoss(torch.nn.Module):
         max_possible = n * (n - 1) // 2
 
         if max_possible <= self.max_pairs:
-            # Generiraj sve moguće (i, j) gdje i < j
+            # all possible (i, j), where i < j
             pairs = torch.tensor(list(itertools.combinations(range(n), 2)), device=outputs.device)
         else:
-            # Generiraj nasumične kandidate
+            # random max_pairs pairs
             idx_i, idx_j = torch.randint(0, n, (2, self.max_pairs * 2), device=outputs.device)
 
-            # Filtriraj: i != j i i < j
             mask = (idx_i != idx_j) & (idx_i < idx_j)
             idx_i = idx_i[mask]
             idx_j = idx_j[mask]
 
-            # Kombiniraj i ukloni duplikate
             if idx_i.numel() == 0:
                 return torch.tensor(0.0, device=outputs.device, requires_grad=True)
 
             pairs = torch.stack([idx_i, idx_j], dim=1)
             pairs = torch.unique(pairs, dim=0)
 
-            # Uzmimo najviše max_pairs parova
             if pairs.size(0) > self.max_pairs:
                 rand_idx = torch.randperm(pairs.size(0), device=outputs.device)[:self.max_pairs]
                 pairs = pairs[rand_idx]
@@ -79,7 +75,6 @@ class PureRankingLoss(torch.nn.Module):
             outputs[idx_j][valid],
             target[valid]
         )
-
 
 
 class CombinedRankingLoss(torch.nn.Module):
@@ -206,6 +201,7 @@ class BatchMarginRankingLoss(torch.nn.Module):
 
         return i, j
 
+
 def train_epoch(encoder, scorer, loader, optimizer, loss_fn, device, config):
     global min_scorer_value
     global max_scorer_value
@@ -218,7 +214,7 @@ def train_epoch(encoder, scorer, loader, optimizer, loss_fn, device, config):
         optimizer.zero_grad()
 
         node_emb = encoder(batch.x, batch.edge_index)
-        if (config.prediction_target == "edge"):
+        if config.prediction_target == "edge":
             preds = scorer(node_emb, batch.edge_index).unsqueeze(-1)
             batch_index = batch.batch[batch.edge_index[0]]
         else:
@@ -231,10 +227,7 @@ def train_epoch(encoder, scorer, loader, optimizer, loss_fn, device, config):
             max_scorer_value = preds.max()
         
         loss = 0
-        graphs = batch.to_data_list()
-        
-        # pred_ranks = rankdata(-preds_g.cpu().numpy(), method='dense')
-        # true_ranks = rankdata(-y_g.cpu().numpy(), method='dense')
+
         if config.loss_fn == 'batch_ranking':
             epoch_loss = loss_fn(preds.squeeze(-1), batch.y.squeeze(-1), batch_index)
             total_loss += epoch_loss
@@ -263,7 +256,8 @@ def train_epoch(encoder, scorer, loader, optimizer, loss_fn, device, config):
             total_loss += loss.item()
             
     return total_loss / len(loader)
-    
+
+
 def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, config):
     encoder.train()
     scorer.train()
@@ -275,12 +269,12 @@ def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, con
         
         # Forward pass
         node_emb = encoder(batch.x, batch.edge_index)
-        if (config.prediction_target == "edge"):
+        if config.prediction_target == "edge":
             preds = scorer(node_emb, batch.edge_index)
         else:
             preds = scorer(node_emb)
         
-        # Simplified loss - just use global median instead of per-graph
+        # Simplified loss - use global median instead of per-graph
         if config.loss_fn == 'combined':
             y_threshold = (batch.y >= torch.median(batch.y)).float()
             loss = loss_fn(preds, batch.y, y_threshold)
@@ -292,14 +286,16 @@ def train_epoch_fastest(encoder, scorer, loader, optimizer, loss_fn, device, con
         total_loss += loss.item()
     
     return total_loss / len(loader)
-    
+
+
 def top_n_percent_accuracy(true, pred, n_percent=0.1):
     k = max(1, int(len(true) * n_percent))
     top_true = set(np.argsort(-true)[:k])
     top_pred = set(np.argsort(-pred)[:k])
     intersection = top_true & top_pred
     return len(intersection) / len(top_true)
-    
+
+
 def compute_graph_ranking_metrics(true, pred, top_k_ratio=0.1):
     true = np.asarray(true)
     pred = np.asarray(pred)
@@ -330,7 +326,8 @@ def compute_graph_ranking_metrics(true, pred, top_k_ratio=0.1):
         "ndcg": ndcg,
         "top_n_percent": top_n_acc
     }
-    
+
+
 def evaluate(encoder, scorer, loader, device, config, save_path="./all_rankings/ranking_net_crit_final.jsonl"):
     encoder.eval()
     scorer.eval()
@@ -341,20 +338,14 @@ def evaluate(encoder, scorer, loader, device, config, save_path="./all_rankings/
         for batch in loader:
             batch = batch.to(device)
             node_emb = encoder(batch.x, batch.edge_index)
-            if (config.prediction_target == "edge"):
+            if config.prediction_target == "edge":
                 preds = scorer(node_emb, batch.edge_index)
                 batch_index = batch.batch[batch.edge_index[0]]
             else:
                 preds = scorer(node_emb)
                 batch_index = batch.batch
 
-            # Split batch into individual graphs
             graphs = batch.to_data_list()
-            # preds is for all edges in batch; split preds per graph
-            edge_ptr = batch.ptr  # batch.ptr gives cumulative node counts for graphs
-
-            # To split preds and true values per graph, use batch information:
-            # edge_batch = batch.batch[batch.edge_index[0]]  # edge to graph mapping
 
             for g, graph in enumerate(graphs):
                 mask = (batch_index == g)
@@ -408,7 +399,7 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
         for batch in loader:
             batch = batch.to(device)
             node_emb = encoder(batch.x, batch.edge_index)
-            if (config.prediction_target == "edge"):
+            if config.prediction_target == "edge":
                 preds = scorer(node_emb, batch.edge_index).unsqueeze(-1)
                 batch_index = batch.batch[batch.edge_index[0]]
             else:
@@ -426,9 +417,9 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
                 y_g = batch.y[mask].unsqueeze(-1)
                 
                 # Use same loss calculation as training                
-                if (config.loss_fn == 'mse' or config.loss_fn == 'ranking'):
+                if config.loss_fn == 'mse' or config.loss_fn == 'ranking':
                     loss += loss_fn(preds_g, y_g)
-                elif (config.loss_fn == 'combined'):
+                elif config.loss_fn == 'combined':
                     y_threshold_g = (y_g >= torch.median(y_g)).float() #.unsqueeze(-1)
                     loss += loss_fn(preds_g, y_g, y_threshold_g)
 
@@ -436,10 +427,6 @@ def validate_epoch(encoder, scorer, loader, loss_fn, device, config):
                 true_ranks = rankdata(-y_g.cpu().numpy(), method='dense')
 
                 # Izračun metrika za svaki graf
-                # pred_ranks = rankdata(-preds_g, method='dense')
-                # true_ranks = rankdata(-true_g, method='dense')
-                
-                # Metrike
                 pred_top = np.where(pred_ranks == 1)[0]
                 true_top = np.where(true_ranks == 1)[0]
                 pred_top_1_2 = np.where((pred_ranks == 1) | (pred_ranks == 2))[0]
@@ -519,7 +506,7 @@ def main():
         config = wandb.config    
 
     # Load the dataset and normalize features
-    if (config.feature_normalization):
+    if config.feature_normalization:
         transform = NormalizeFeatures()
         dataset = CriticalityDataset(path="../dataset_generator/criticality_dataset_network_criticality.pt",  metric_name="network_criticality", transform=transform, features=config.features, is_edge=config.prediction_target=="edge")
     else:
@@ -543,7 +530,7 @@ def main():
     else:
         raise ValueError(f"Unknown architecture: {config.architecture}")
         
-    if (config.prediction_target == "edge"):
+    if config.prediction_target == "edge":
         scorer = EdgeScorer(node_dim=config.hidden_channels, hidden_dim=config.hidden_channels, edge_feat_mode=config.edge_feature_mode).to(device)
     else:
         scorer = NodeScorer(node_dim=config.hidden_channels, hidden_dim=config.hidden_channels).to(device)
@@ -558,16 +545,17 @@ def main():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
     # loss function
-    if (config.loss_fn == 'mse'):
-        loss_fn = F.mse_loss
-    elif (config.loss_fn == 'ranking'):
-        loss_fn = PureRankingLoss(margin=config.margin)
-    elif (config.loss_fn == 'combined'): 
-        loss_fn = CombinedRankingLoss(margin=0.1)
-    elif (config.loss_fn == 'batch_ranking'):
-        loss_fn = BatchMarginRankingLoss(margin=config.margin)
-    else:
-        raise ValueError(f"Unknown loss function: {config.loss_fn}")
+    match config.loss_fn:
+        case 'mse':
+            loss_fn = F.mse_loss
+        case 'ranking':
+            loss_fn = PureRankingLoss(margin=config.margin)
+        case 'combined':
+            loss_fn = CombinedRankingLoss(margin=0.1)
+        case 'batch_ranking':
+             loss_fn = BatchMarginRankingLoss(margin=config.margin)
+        case _:
+            raise ValueError(f"Unknown loss function: {config.loss_fn}")
 
     # training...
     early_stopping_patience = 15
@@ -653,11 +641,11 @@ def main():
         for k, v in best_metrics.items():
             print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
 
-    print("Evaluating model...") #promijeni da bude best 
+    print("Evaluating model...") # TODO: on the best one
     all_rankings = evaluate(encoder, scorer, val_loader, device, config)
     # all_rankings = evaluate(encoder, scorer, val_loader, device, config)
 
-    # Primjer ispisa prvih 3 rezultata
+    # output examples
     for i, result in enumerate(all_rankings[:3]):
         print(f"\nGraph ID: {result['graph_id']}")
         print("Edge Index:", result["edge_node_index"])
