@@ -366,6 +366,7 @@ def evaluate(encoder, scorer, loader, device, config, save_path="./all_rankings/
                     "true_ranks": true_ranks.tolist()
                 })
 
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     with open(save_path, "w") as f:
         for result in all_rankings:
             compact_result = {

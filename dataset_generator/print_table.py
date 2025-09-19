@@ -1,5 +1,5 @@
-import torch
 import argparse
+import torch
 
 parser = argparse.ArgumentParser(description='Process some arguments.')
 parser.add_argument('argument1', nargs='?', default="network_criticality", help='Metric (default: network_criticality)')
@@ -13,7 +13,6 @@ graph_id = args.argument2
 model = torch.load("./criticality_dataset_"+metric+".pt", weights_only=False)
 
 # print(graph_idd)
-# Check if the model is a list and print the first graph
 # print(model[8])
 for i in range(29):
     ix = 0
