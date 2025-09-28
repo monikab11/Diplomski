@@ -1,4 +1,12 @@
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
+import sys
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+current_dir = os.path.abspath(os.path.join(current_dir, ".."))
+current_dir = os.path.abspath(os.path.join(current_dir, "my_graphs_dataset"))
+sys.path.append(current_dir)
+
 from my_graphs_dataset import GraphDataset
 from scipy.linalg import pinv
 from pathlib import Path
@@ -7,11 +15,10 @@ from tqdm import tqdm
 import numpy as np
 import argparse
 import torch
-import sys
+
 
 INFINITY = sys.maxsize
 
-sys.path.append("/home/jovyan/Diplomski/my_graphs_dataset")
 
 # -------------------------------
 # METRICS
