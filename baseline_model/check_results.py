@@ -24,7 +24,7 @@ if graph_id == -1:
         if result:
             print(result)
         else:
-            print(f"Element with graph_id {graph_id} not found.")
+            print(f"Element with graph_id {i} not found.")
 else:
     result = next((item for item in data if item["graph_id"] == int(graph_id)), None)
 
