@@ -74,12 +74,12 @@ Finally, run the dataset generation script:
 python3 generate_full_ds.py $METRIC$
 ```
 Replace `$METRIC$` with one of the following values:
--`algebraic_connectivity` 
--`effective_graph_resistance`
--`node_connectivity`
--`edge_connectivity`
--`network_criticality`
--`nc3` - modified network criticality.
+- `algebraic_connectivity` 
+- `effective_graph_resistance`
+- `node_connectivity`
+- `edge_connectivity`
+- `network_criticality`
+- `nc3` - modified network criticality.
 
 ## Usage
 To run the code, install required packages by running 
