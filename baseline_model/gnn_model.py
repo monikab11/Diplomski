@@ -1,7 +1,8 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from torch_geometric.nn import SAGEConv, GCNConv
+import torch.nn.functional as F
+import torch.nn as nn
+import torch
+
 
 class GraphSAGEEncoder(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers=2):
@@ -17,10 +18,7 @@ class GraphSAGEEncoder(nn.Module):
             if i < len(self.convs)-1:  # Add ReLU only between layers
                 x = F.relu(x)
         return x
-        # for conv in self.convs:
-        #     x = conv(x, edge_index)
-        #     x = F.relu(x) # ovdje mozda ne ak je zadnji sloj
-        # return x
+
 
 class GCNEncoder(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers=2):
@@ -36,7 +34,8 @@ class GCNEncoder(nn.Module):
             if i < len(self.convs) - 1:
                 x = F.relu(x)
         return x
-        
+
+
 class EdgeScorer(nn.Module):
     def __init__(self, node_dim, hidden_dim, edge_feat_mode='concat'):
         super().__init__()
@@ -66,12 +65,9 @@ class EdgeScorer(nn.Module):
         elif self.mode == 'diff':
             edge_feat = x[row] - x[col]
         elif self.mode == 'dot':
-            # edge_feat = (x[row] * x[col])
-            # edge_feat = np.dot(x[row], x[col])
             edge_feat = (x[row] * x[col]).sum(dim=-1)
         else:
             raise ValueError(f"Unknown edge_feat_mode: {self.mode}")
-        # print(edge_feat)
         return edge_feat
 
     def forward(self, x, edge_index):
@@ -82,6 +78,7 @@ class EdgeScorer(nn.Module):
         
         score = self.mlp(edge_feat).squeeze(-1)
         return score
+
 
 class NodeScorer(nn.Module):
     def __init__(self, node_dim, hidden_dim):

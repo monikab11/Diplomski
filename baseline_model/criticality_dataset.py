@@ -1,7 +1,7 @@
-import torch
 from torch_geometric.data import Data, Dataset
 import networkx as nx
-import numpy as np
+import torch
+
 
 class CriticalityDataset(Dataset):
     def __init__(self, path, metric_name="network_criticality", transform=None, pre_transform=None, features=None, is_edge=True):
@@ -18,8 +18,6 @@ class CriticalityDataset(Dataset):
         item = self.data_list[idx]
         G = nx.from_graph6_bytes(item['graph6'].encode())
         edge_index = torch.tensor(item['edge_index'], dtype=torch.long).t().contiguous()
-        # edge_index = torch.tensor(list(G.edges()), dtype=torch.long).t().contiguous() #OVO DRUKCIJE
-        # x = torch.ones((G.number_of_nodes(), 1), dtype=torch.float)
 
         selected_features = []
         if 'features' in item and self.features:
@@ -37,12 +35,12 @@ class CriticalityDataset(Dataset):
         
         x = torch.cat(selected_features, dim=1)
         if self.is_edge:
-            if (self.metric_name in ["algebraic_connectivity", "network_criticality", "node_connectivity", "edge_connectivity", "nc1", "nc2", "nc3"]):
+            if self.metric_name in ["algebraic_connectivity", "network_criticality", "node_connectivity", "edge_connectivity", "nc1", "nc2", "nc3"]:
                 y = -1.0 * torch.tensor(item["edge_"+self.metric_name], dtype=torch.float)
             else:
                 y = torch.tensor(item["edge_"+self.metric_name], dtype=torch.float)
         else:
-            if (self.metric_name in ["algebraic_connectivity", "network_criticality", "node_connectivity", "edge_connectivity", "nc1", "nc2", "nc3"]):
+            if self.metric_name in ["algebraic_connectivity", "network_criticality", "node_connectivity", "edge_connectivity", "nc1", "nc2", "nc3"]:
                 y = -1.0 * torch.tensor(item["node_"+self.metric_name], dtype=torch.float)
             else:
                 y = torch.tensor(item["node_"+self.metric_name], dtype=torch.float)
