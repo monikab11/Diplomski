@@ -15,9 +15,7 @@ from tqdm import tqdm
 import numpy as np
 import argparse
 import torch
-
-
-INFINITY = sys.maxsize
+import math
 
 
 # -------------------------------
@@ -50,7 +48,7 @@ def nc1(G):
     L = nx.laplacian_matrix(G).toarray()
     isolated_nodes = np.sum(np.all(L == 0, axis=1))
     if isolated_nodes > 0:
-        print(f"isolated {isolated_nodes}")
+        # print(f"isolated {isolated_nodes}")
         return -isolated_nodes
     if not nx.is_connected(G):
         return -0.5
@@ -65,6 +63,11 @@ def calculate_metric(metric, G):
         case "algebraic_connectivity":
             return algebraic_connectivity(G)
         case "effective_graph_resistance":
+            egr = effective_graph_resistance(G)
+            if math.isinf(egr):
+                return 1000000
+            else:
+                return egr
             return effective_graph_resistance(G)
         case "node_connectivity":
             return node_connectivity(G)
@@ -101,6 +104,8 @@ def process_graph(i, g6, metric):
         metric_new = calculate_metric(metric, G)
         edge_index.append(edge)
         new_metrics_edge.append(metric_new)
+        delta = metric_new - metric_orig
+        edge_delta_metric.append(round(delta, 3))
         G.add_edge(*edge)
 
     for node in list(G.nodes()):
@@ -108,12 +113,16 @@ def process_graph(i, g6, metric):
         metric_new = calculate_metric(metric, G)
         node_index.append(node)
         new_metrics_node.append(metric_new)
+        delta = metric_new - metric_orig
+        node_delta_metric.append(round(delta, 3))
         G = G_orig.copy()
     
     possible_values = [-0.05, -0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9]
     
     if metric == "nc1":
-        print(f"before {new_metrics_edge}")
+        edge_delta_metric = []
+        node_delta_metric = []
+        # print(f"before {new_metrics_edge}")
         first_value = new_metrics_edge[0]
         if all(x == first_value for x in new_metrics_edge):
             if first_value in possible_values:
@@ -126,11 +135,11 @@ def process_graph(i, g6, metric):
                 finite_min_positive = 0
     
             new_metrics_edge = [round(finite_min_positive + x, 3) if x in possible_values else x for x in new_metrics_edge]
-        print(f"after {new_metrics_edge}")
+        # print(f"after {new_metrics_edge}")
         edge_delta_metric = [round(metric_orig + x, 3) for x in new_metrics_edge]
-        print(f"edge_delta_metric {edge_delta_metric}")
+        # print(f"edge_delta_metric {edge_delta_metric}")
 
-        print(f"before {new_metrics_node}")
+        # print(f"before {new_metrics_node}")
         first_value = new_metrics_node[0]
         if all(x == first_value for x in new_metrics_node):
             if first_value in possible_values:
@@ -143,13 +152,14 @@ def process_graph(i, g6, metric):
                 finite_min_positive = 0
     
             new_metrics_node = [round(finite_min_positive + x, 3) if x in possible_values else x for x in new_metrics_node]
-        print(f"after {new_metrics_node}")
+        # print(f"after {new_metrics_node}")
         node_delta_metric = [round(metric_orig + x, 3) for x in new_metrics_node]
-        print(f"node_delta_metric {node_delta_metric}")
-
-    possible_values = [-0.5, -1, -2, -3, -4, -5, -6, -7, -8, -9]
-    if metric == "nc3":
-        print(f"before {new_metrics_edge}")
+        # print(f"node_delta_metric {node_delta_metric}")  
+    elif metric == "nc3":
+        possible_values = [-0.5, -1, -2, -3, -4, -5, -6, -7, -8, -9]
+        edge_delta_metric = []
+        node_delta_metric = []
+        # print(f"before {new_metrics_edge}")
         first_value = new_metrics_edge[0]
         if all(x == first_value for x in new_metrics_edge):
             if first_value in possible_values:
@@ -162,11 +172,11 @@ def process_graph(i, g6, metric):
                 finite_min_positive = 0
     
             new_metrics_edge = [round(finite_min_positive + x, 3) if x in possible_values else x for x in new_metrics_edge]
-        print(f"after {new_metrics_edge}")
+        # print(f"after {new_metrics_edge}")
         edge_delta_metric = [round(-metric_orig + x, 3) for x in new_metrics_edge]
-        print(f"edge_delta_metric {edge_delta_metric}")
+        # print(f"edge_delta_metric {edge_delta_metric}")
 
-        print(f"before {new_metrics_node}")
+        # print(f"before {new_metrics_node}")
         first_value = new_metrics_node[0]
         if all(x == first_value for x in new_metrics_node):
             if first_value in possible_values:
@@ -179,9 +189,9 @@ def process_graph(i, g6, metric):
                 finite_min_positive = 0
     
             new_metrics_node = [round(finite_min_positive + x, 3) if x in possible_values else x for x in new_metrics_node]
-        print(f"after {new_metrics_node}")
+        # print(f"after {new_metrics_node}")
         node_delta_metric = [round(-metric_orig + x, 3) for x in new_metrics_node]
-        print(f"node_delta_metric {node_delta_metric}")
+        # print(f"node_delta_metric {node_delta_metric}")
         
         
     return {
